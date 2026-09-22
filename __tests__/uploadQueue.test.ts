@@ -1,0 +1,117 @@
+import { createUploadQueue, memoryStorage, type NewUploadJob } from '../src/lib/uploadQueue';
+
+function job(id: string): NewUploadJob {
+  return {
+    id,
+    localUri: `file://${id}.jpg`,
+    width: 4000,
+    height: 3000,
+    storagePath: `user/trip/car/${id}.jpg`,
+    carId: 'car',
+    tripId: 'trip',
+    userId: 'user',
+    angle: id === 'b' ? 'front' : 'top',
+  };
+}
+
+describe('upload queue', () => {
+  it('compresses a photo before uploading it', async () => {
+    const order: string[] = [];
+    const queue = createUploadQueue({
+      compress: async () => {
+        order.push('compress');
+        return { uri: 'file://small.jpg' };
+      },
+      upload: async (_job, uri) => {
+        order.push(`upload:${uri}`);
+      },
+      storage: memoryStorage(),
+      sleep: async () => undefined,
+      now: () => 0,
+    });
+    queue.enqueue(job('a'));
+    await queue.whenDrained();
+    expect(order).toEqual(['compress', 'upload:file://small.jpg']);
+  });
+
+  it('accepts another photo while the first upload is still running', async () => {
+    let releaseFirst: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const queue = createUploadQueue({
+      compress: async (item) => {
+        if (item.id === 'a') await gate;
+        return { uri: `file://jpeg-${item.id}.jpg` };
+      },
+      upload: async () => undefined,
+      storage: memoryStorage(),
+      sleep: async () => undefined,
+      now: () => 0,
+    });
+    queue.enqueue(job('a'));
+    queue.enqueue(job('b'));
+    expect(queue.list().map((item) => item.id).sort()).toEqual(['a', 'b']);
+    releaseFirst();
+    await queue.whenDrained();
+    expect(queue.list()).toEqual([]);
+  });
+
+  it('retries a failed upload without dropping the photo', async () => {
+    let clock = 1_000;
+    const sleeps: number[] = [];
+    let attempts = 0;
+    const queue = createUploadQueue({
+      compress: async (item) => ({ uri: `file://jpeg-${item.id}.jpg` }),
+      upload: async () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error('offline');
+      },
+      storage: memoryStorage(),
+      now: () => clock,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+        clock += ms;
+      },
+    });
+    queue.enqueue(job('a'));
+    await queue.whenDrained();
+    expect(attempts).toBe(2);
+    expect(sleeps[0]).toBe(1000);
+    expect(queue.list()).toEqual([]);
+  });
+
+  it('reloads a saved failure and tries again', async () => {
+    const storage = memoryStorage();
+    let attempts = 0;
+    let first: ReturnType<typeof createUploadQueue>;
+    first = createUploadQueue({
+      compress: async () => {
+        throw new Error('offline');
+      },
+      upload: async () => undefined,
+      storage,
+      now: () => 5_000,
+      sleep: async () => {
+        first.stop();
+      },
+    });
+    first.enqueue(job('a'));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const saved = await storage.load();
+    expect(saved).toEqual([expect.objectContaining({ id: 'a', status: 'failed', attempts: 1 })]);
+
+    const second = createUploadQueue({
+      compress: async (item) => ({ uri: item.localUri }),
+      upload: async () => {
+        attempts += 1;
+      },
+      storage,
+      now: () => 0,
+      sleep: async () => undefined,
+    });
+    await second.load();
+    await second.whenDrained();
+    expect(attempts).toBe(1);
+  });
+});

@@ -1,0 +1,18 @@
+{
+  "cli": {
+    "version": ">= 16.0.0",
+    "appVersionSource": "local"
+  },
+  "build": {
+    "preview": {
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "SUPABASE_URL": "https://db.orale.boo",
+        "SUPABASE_PUBLISHABLE_KEY": "sb_publishable_l7xbQmtItSu6ld3QgG49KX_m_mjSngd"
+      }
+    }
+  }
+}
