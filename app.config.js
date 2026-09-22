@@ -1,9 +1,7 @@
-import fs from 'fs';
-import path from 'path';
+const fs = require('fs');
+const path = require('path');
 
-import type { ExpoConfig } from 'expo/config';
-
-function publicEnv(name: 'SUPABASE_URL' | 'SUPABASE_PUBLISHABLE_KEY' | 'EXPO_PUBLIC_SHARE_BASE_URL'): string {
+function publicEnv(name) {
   const fromProcess = process.env[name];
   if (fromProcess) return fromProcess;
   try {
@@ -21,7 +19,7 @@ function publicEnv(name: 'SUPABASE_URL' | 'SUPABASE_PUBLISHABLE_KEY' | 'EXPO_PUB
   return '';
 }
 
-const config: ExpoConfig = {
+const config = {
   name: 'Trip Tracker',
   slug: 'trip-tracker',
   scheme: 'triptracker',
@@ -67,7 +65,10 @@ const config: ExpoConfig = {
     supabaseUrl: publicEnv('SUPABASE_URL'),
     supabasePublishableKey: publicEnv('SUPABASE_PUBLISHABLE_KEY'),
     shareBaseUrl: publicEnv('EXPO_PUBLIC_SHARE_BASE_URL'),
+    eas: {
+        projectId: "86693285-e54b-4b37-b479-d839f1cdc760",
+    },
   },
 };
 
-export default config;
+module.exports = config;
