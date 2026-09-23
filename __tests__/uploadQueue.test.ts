@@ -6,7 +6,7 @@ function job(id: string): NewUploadJob {
     localUri: `file://${id}.jpg`,
     width: 4000,
     height: 3000,
-    storagePath: `user/trip/car/${id}.jpg`,
+    fileName: `${id}.jpg`,
     carId: 'car',
     tripId: 'trip',
     userId: 'user',
@@ -113,5 +113,39 @@ describe('upload queue', () => {
     await second.load();
     await second.whenDrained();
     expect(attempts).toBe(1);
+  });
+
+  it('holds a photo until the lot number exists, then sends it', async () => {
+    let ready = false;
+    const gate: { open: (() => void) | null } = { open: null };
+    const uploads: string[] = [];
+    const queue = createUploadQueue({
+      compress: async (item) => ({ uri: `file://jpeg-${item.id}.jpg` }),
+      upload: async () => {
+        if (!ready) {
+          const error = new Error('Enter the lot number before this photo can send');
+          error.name = 'WaitingForLotNumber';
+          throw error;
+        }
+        uploads.push('sent');
+      },
+      storage: memoryStorage(),
+      now: () => 0,
+      sleep: () =>
+        new Promise<void>((resolve) => {
+          gate.open = () => resolve();
+        }),
+    });
+    queue.enqueue(job('a'));
+    for (let i = 0; i < 20 && queue.list()[0]?.status !== 'waiting'; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(queue.list()[0]?.status).toBe('waiting');
+    expect(uploads).toEqual([]);
+    ready = true;
+    queue.releaseCar('car');
+    gate.open?.();
+    await queue.whenDrained();
+    expect(uploads).toEqual(['sent']);
   });
 });

@@ -5,17 +5,38 @@ export type UploadJob = {
   localUri: string;
   width: number;
   height: number;
-  storagePath: string;
+  fileName: string;
+  imageUrl?: string;
   carId: string;
   tripId: string;
   userId: string;
   angle: Angle;
   attempts: number;
-  status: 'pending' | 'uploading' | 'failed';
+  status: 'pending' | 'uploading' | 'failed' | 'waiting';
   nextAttemptAt: number;
 };
 
-export type NewUploadJob = Omit<UploadJob, 'attempts' | 'status' | 'nextAttemptAt'>;
+export type NewUploadJob = Omit<UploadJob, 'attempts' | 'status' | 'nextAttemptAt' | 'imageUrl'>;
+
+export function reviveUploadJob(raw: Partial<UploadJob> & { storagePath?: string }): UploadJob | null {
+  if (!raw.id || !raw.localUri || !raw.carId || !raw.tripId || !raw.userId || !raw.angle) return null;
+  const legacyName = raw.storagePath?.split('/').filter(Boolean).pop();
+  return {
+    id: raw.id,
+    localUri: raw.localUri,
+    width: typeof raw.width === 'number' ? raw.width : 0,
+    height: typeof raw.height === 'number' ? raw.height : 0,
+    fileName: raw.fileName || legacyName || `${raw.angle}.jpg`,
+    imageUrl: raw.imageUrl,
+    carId: raw.carId,
+    tripId: raw.tripId,
+    userId: raw.userId,
+    angle: raw.angle,
+    attempts: raw.attempts ?? 0,
+    status: raw.status === 'failed' ? 'failed' : 'pending',
+    nextAttemptAt: 0,
+  };
+}
 
 export type QueueStorage = {
   load: () => Promise<UploadJob[]>;
@@ -86,6 +107,20 @@ export class UploadQueue {
     this.persist();
   }
 
+  releaseCar(carId: string): void {
+    let changed = false;
+    for (const job of this.jobs) {
+      if (job.carId !== carId || job.status !== 'waiting') continue;
+      job.status = 'pending';
+      job.nextAttemptAt = 0;
+      changed = true;
+    }
+    if (!changed) return;
+    this.emit();
+    this.persist();
+    void this.pump();
+  }
+
   enqueue(input: NewUploadJob): void {
     const job: UploadJob = {
       ...input,
@@ -107,11 +142,8 @@ export class UploadQueue {
     if (this.stopped) return;
     const byId = new Map<string, UploadJob>();
     for (const job of stored) {
-      byId.set(job.id, {
-        ...job,
-        status: job.status === 'uploading' ? 'pending' : job.status,
-        nextAttemptAt: 0,
-      });
+      const revived = reviveUploadJob(job);
+      if (revived) byId.set(revived.id, revived);
     }
     for (const job of this.jobs) byId.set(job.id, job);
     this.jobs = [...byId.values()];
@@ -170,11 +202,12 @@ export class UploadQueue {
           this.jobs = this.jobs.filter((job) => job !== ready);
           this.emit();
           this.persist();
-        } catch {
+        } catch (err) {
           if (!this.jobs.includes(ready)) continue;
-          ready.attempts += 1;
-          ready.status = 'failed';
-          ready.nextAttemptAt = this.deps.now() + backoffMs(ready.attempts);
+          const waiting = err instanceof Error && err.name === 'WaitingForLotNumber';
+          if (!waiting) ready.attempts += 1;
+          ready.status = waiting ? 'waiting' : 'failed';
+          ready.nextAttemptAt = this.deps.now() + (waiting ? 1_000 : backoffMs(ready.attempts));
           this.emit();
           this.persist();
         }

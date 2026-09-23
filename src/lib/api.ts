@@ -1,6 +1,8 @@
 import type { User } from '@supabase/supabase-js';
 
-import { ANGLES, MAX_CARS, type Angle } from './angles';
+import { albumUrlFromPhotos } from './albumUrl';
+import { MAX_CARS, type Angle } from './angles';
+import { LOT_PHOTOS_BUCKET, storagePathFromPublicUrl } from './lotPhotos';
 import { supabase } from './supabase';
 
 export type City = {
@@ -14,7 +16,7 @@ export type Trip = {
   trip_date: string;
   city_name: string;
   pay_cents: number | null;
-  share_token: string;
+  album_url: string | null;
 };
 
 export type Car = {
@@ -28,7 +30,7 @@ export type PhotoRow = {
   id: string;
   car_id: string;
   angle: Angle;
-  storage_path: string;
+  image_url: string;
 };
 
 export type Expense = {
@@ -37,23 +39,6 @@ export type Expense = {
   amount_cents: number;
   note: string;
   trip_id: string | null;
-};
-
-export type SharedPhoto = {
-  angle: string;
-  storage_path: string;
-};
-
-export type SharedCar = {
-  position: number;
-  lot_number: string;
-  photos: SharedPhoto[];
-};
-
-export type SharedTrip = {
-  city_name: string;
-  trip_date: string;
-  cars: SharedCar[];
 };
 
 export const SEED_CITIES: Array<{ name: string; pay_cents: number | null }> = [
@@ -128,7 +113,7 @@ export async function loadWeek(startIso: string, endIso: string): Promise<{
 }> {
   const { data: trips, error } = await supabase
     .from('trips')
-    .select('id, trip_date, city_name, pay_cents, share_token')
+    .select('id, trip_date, city_name, pay_cents, album_url')
     .gte('trip_date', startIso)
     .lte('trip_date', endIso)
     .order('trip_date', { ascending: true })
@@ -151,7 +136,7 @@ export async function loadWeek(startIso: string, endIso: string): Promise<{
   if (carIds.length) {
     const { data, error: photoError } = await supabase
       .from('photos')
-      .select('id, car_id, angle, storage_path')
+      .select('id, car_id, angle, image_url')
       .in('car_id', carIds);
     fail(photoError, 'Could not load photos');
     photos = (data ?? []) as PhotoRow[];
@@ -203,7 +188,7 @@ export async function createTrip(input: {
 export async function loadTrip(tripId: string): Promise<{ trip: Trip; cars: Car[]; photos: PhotoRow[] } | null> {
   const { data: trip, error } = await supabase
     .from('trips')
-    .select('id, trip_date, city_name, pay_cents, share_token')
+    .select('id, trip_date, city_name, pay_cents, album_url')
     .eq('id', tripId)
     .maybeSingle();
   fail(error, 'Could not load the trip');
@@ -220,7 +205,7 @@ export async function loadTrip(tripId: string): Promise<{ trip: Trip; cars: Car[
   if (carIds.length) {
     const { data, error: photoError } = await supabase
       .from('photos')
-      .select('id, car_id, angle, storage_path')
+      .select('id, car_id, angle, image_url')
       .in('car_id', carIds);
     fail(photoError, 'Could not load photos');
     photos = (data ?? []) as PhotoRow[];
@@ -250,19 +235,56 @@ export async function addCar(userId: string, tripId: string, position: number): 
   fail(error, 'Could not add a car');
 }
 
-export async function removeCar(userId: string, tripId: string, carId: string): Promise<void> {
-  const paths = ANGLES.map((angle) => `${userId}/${tripId}/${carId}/${angle.id}.jpg`);
-  await supabase.storage.from('trip-photos').remove(paths);
-  const { error } = await supabase.from('cars').delete().eq('id', carId);
-  fail(error, 'Could not remove the car');
+export async function syncAlbumUrl(tripId: string): Promise<string | null> {
+  const { data: cars, error: carError } = await supabase
+    .from('cars')
+    .select('id, position')
+    .eq('trip_id', tripId)
+    .order('position', { ascending: true });
+  fail(carError, 'Could not save the share link');
+  const carRows = (cars ?? []) as Array<{ id: string; position: number }>;
+  const carIds = carRows.map((car) => car.id);
+  let photoRows: Array<{ car_id: string; angle: string; image_url: string }> = [];
+  if (carIds.length) {
+    const { data: photos, error: photoError } = await supabase
+      .from('photos')
+      .select('car_id, angle, image_url')
+      .in('car_id', carIds);
+    fail(photoError, 'Could not save the share link');
+    photoRows = (photos ?? []) as Array<{ car_id: string; angle: string; image_url: string }>;
+  }
+  const albumUrl = albumUrlFromPhotos(carRows, photoRows);
+  const { error: updateError } = await supabase.from('trips').update({ album_url: albumUrl }).eq('id', tripId);
+  fail(updateError, 'Could not save the share link');
+  return albumUrl;
 }
 
-export async function deleteTrip(userId: string, trip: Trip, cars: Car[]): Promise<void> {
-  const paths = cars.flatMap((car) => ANGLES.map((angle) => `${userId}/${trip.id}/${car.id}/${angle.id}.jpg`));
-  if (paths.length) {
-    await supabase.storage.from('trip-photos').remove(paths);
+async function removeStoredPhotos(urls: string[]): Promise<void> {
+  const paths = urls.map((url) => storagePathFromPublicUrl(url)).filter((path): path is string => Boolean(path));
+  if (!paths.length) return;
+  const { error } = await supabase.storage.from(LOT_PHOTOS_BUCKET).remove(paths);
+  if (error) throw new Error(error.message);
+}
+
+export async function removeCar(tripId: string, carId: string): Promise<void> {
+  const { data: photos, error: photoError } = await supabase.from('photos').select('image_url').eq('car_id', carId);
+  fail(photoError, 'Could not remove the car');
+  await removeStoredPhotos((photos ?? []).map((photo) => String(photo.image_url ?? '')));
+  const { error } = await supabase.from('cars').delete().eq('id', carId);
+  fail(error, 'Could not remove the car');
+  await syncAlbumUrl(tripId);
+}
+
+export async function deleteTrip(tripId: string): Promise<void> {
+  const { data: cars, error: carError } = await supabase.from('cars').select('id').eq('trip_id', tripId);
+  fail(carError, 'Could not delete the trip');
+  const carIds = (cars ?? []).map((car) => String(car.id));
+  if (carIds.length) {
+    const { data: photos, error: photoError } = await supabase.from('photos').select('image_url').in('car_id', carIds);
+    fail(photoError, 'Could not delete the trip');
+    await removeStoredPhotos((photos ?? []).map((photo) => String(photo.image_url ?? '')));
   }
-  const { error } = await supabase.from('trips').delete().eq('id', trip.id);
+  const { error } = await supabase.from('trips').delete().eq('id', tripId);
   fail(error, 'Could not delete the trip');
 }
 
@@ -285,29 +307,3 @@ export async function addExpense(input: {
   fail(error, 'Could not save the expense');
 }
 
-export async function fetchSharedTrip(token: string): Promise<SharedTrip | null> {
-  const { data, error } = await supabase.rpc('shared_trip', { token });
-  fail(error, 'Could not open this trip');
-  if (!data || typeof data !== 'object') return null;
-  const record = data as Record<string, unknown>;
-  const cars = Array.isArray(record.cars) ? record.cars : [];
-  return {
-    city_name: String(record.city_name ?? ''),
-    trip_date: String(record.trip_date ?? ''),
-    cars: cars.map((car) => {
-      const row = car as Record<string, unknown>;
-      const photos = Array.isArray(row.photos) ? row.photos : [];
-      return {
-        position: Number(row.position ?? 0),
-        lot_number: String(row.lot_number ?? ''),
-        photos: photos.map((photo) => {
-          const item = photo as Record<string, unknown>;
-          return {
-            angle: String(item.angle ?? ''),
-            storage_path: String(item.storage_path ?? ''),
-          };
-        }),
-      };
-    }),
-  };
-}

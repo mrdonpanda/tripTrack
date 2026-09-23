@@ -64,7 +64,6 @@ const config = {
   extra: {
     supabaseUrl: publicEnv('SUPABASE_URL'),
     supabasePublishableKey: publicEnv('SUPABASE_PUBLISHABLE_KEY'),
-    shareBaseUrl: publicEnv('EXPO_PUBLIC_SHARE_BASE_URL'),
     eas: {
         projectId: "86693285-e54b-4b37-b479-d839f1cdc760",
     },

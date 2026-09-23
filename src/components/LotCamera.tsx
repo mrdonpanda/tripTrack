@@ -1,9 +1,11 @@
-import { CameraView, useCameraPermissions, type CameraViewProps } from 'expo-camera';
+import { CameraView, type CameraViewProps } from 'expo-camera';
 import { useEffect, useRef, useState, type ComponentType, type Ref } from 'react';
-import { Pressable, Text, View } from 'react-native';
+import { Modal, Pressable, Text, useWindowDimensions, View } from 'react-native';
 
+import { ensureCameraAccess } from '../lib/cameraAccess';
 import { selectWidestBackCamera, type WidestCameraChoice } from '../lib/cameraDevices';
 import { queryCameraDevices } from '../lib/cameraQuery';
+import { startVolumeShutter } from '../lib/volumeShutter';
 import { colors } from '../theme';
 import { BigButton } from './ui';
 
@@ -37,15 +39,33 @@ export function LotCamera({
   onShot: (photo: { uri: string; width: number; height: number }) => void;
   onClose: () => void;
 }) {
+  const { width, height } = useWindowDimensions();
+  const frame = { flex: 1 as const, width, height, backgroundColor: colors.bg };
   const cameraRef = useRef<CameraView>(null);
-  const [permission, requestPermission] = useCameraPermissions();
+  const [access, setAccess] = useState<'pending' | 'granted' | 'denied'>('pending');
   const [choice, setChoice] = useState<WidestCameraChoice | null>(null);
+  const [forceDefault, setForceDefault] = useState(false);
   const [lensOverride, setLensOverride] = useState<string | undefined>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const shootRef = useRef<() => void>(() => undefined);
 
   useEffect(() => {
-    if (!permission?.granted) return;
+    let live = true;
+    ensureCameraAccess()
+      .then((ok) => {
+        if (live) setAccess(ok ? 'granted' : 'denied');
+      })
+      .catch(() => {
+        if (live) setAccess('denied');
+      });
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (access !== 'granted') return;
     let live = true;
     queryCameraDevices()
       .then((devices) => {
@@ -57,7 +77,18 @@ export function LotCamera({
     return () => {
       live = false;
     };
-  }, [permission?.granted]);
+  }, [access]);
+
+  async function askAgain() {
+    setAccess('pending');
+    setError(null);
+    try {
+      const ok = await ensureCameraAccess();
+      setAccess(ok ? 'granted' : 'denied');
+    } catch {
+      setAccess('denied');
+    }
+  }
 
   async function shoot() {
     if (busy || !cameraRef.current) return;
@@ -73,81 +104,106 @@ export function LotCamera({
     }
   }
 
-  if (!permission) {
-    return (
-      <View style={overlay}>
-        <Text style={heading}>Opening camera</Text>
-      </View>
-    );
-  }
+  const showCamera = access === 'granted' && choice != null;
+  const selectedLens = lensOverride ?? choice?.selectedLens;
+  shootRef.current = () => {
+    void shoot();
+  };
 
-  if (!permission.granted) {
-    return (
-      <View style={overlay}>
-        <Text style={heading}>Camera access is needed to shoot the cars.</Text>
-        <BigButton label="Allow camera" onPress={() => void requestPermission()} />
-        <BigButton label="Cancel" tone="dark" onPress={onClose} />
-      </View>
-    );
-  }
-
-  if (!choice) {
-    return (
-      <View style={overlay}>
-        <Text style={heading}>Opening camera</Text>
-      </View>
-    );
-  }
-
-  const selectedLens = lensOverride ?? choice.selectedLens;
+  useEffect(() => {
+    if (!showCamera) return;
+    let live = true;
+    let shutter: { stop: () => void } | null = null;
+    startVolumeShutter(() => {
+      shootRef.current();
+    })
+      .then((started) => {
+        if (!live) started.stop();
+        else shutter = started;
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+      shutter?.stop();
+    };
+  }, [showCamera]);
 
   return (
-    <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <WidestCamera
-        ref={cameraRef}
-        testID="camera-view"
-        style={{ flex: 1 }}
-        facing="back"
-        mode="picture"
-        zoom={choice.zoom}
-        selectedLens={selectedLens}
-        cameraId={choice.deviceId}
-        useWidestZoom={choice.useWidestZoom}
-        onAvailableLensesChanged={(event) => {
-          const ultra = lensNames(event.lenses).find((lens) => /ultra/i.test(lens));
-          if (ultra) setLensOverride(ultra);
-        }}
-      />
-      <View style={banner}>
-        <Text style={heading}>{angleLabel.toUpperCase()}</Text>
+    <Modal
+      visible
+      animationType="fade"
+      presentationStyle="fullScreen"
+      statusBarTranslucent
+      supportedOrientations={['portrait', 'landscape']}
+      onRequestClose={onClose}
+    >
+      <View testID="camera-frame" collapsable={false} style={frame}>
+        {showCamera ? (
+          <WidestCamera
+            key={forceDefault ? 'default-back' : 'widest-back'}
+            ref={cameraRef}
+            testID="camera-view"
+            collapsable={false}
+            style={frame}
+            facing="back"
+            mode="picture"
+            zoom={choice.zoom}
+            selectedLens={selectedLens}
+            cameraId={forceDefault ? undefined : choice.deviceId}
+            useWidestZoom={choice.useWidestZoom}
+            onMountError={(event) => {
+              if (!forceDefault && choice.deviceId) {
+                setForceDefault(true);
+                setError(null);
+                return;
+              }
+              setError(event.message || 'The camera preview did not start');
+            }}
+            onAvailableLensesChanged={(event) => {
+              const ultra = lensNames(event.lenses).find((lens) => /ultra/i.test(lens));
+              if (ultra) setLensOverride(ultra);
+            }}
+          />
+        ) : (
+          <View style={[frame, { justifyContent: 'center', padding: 20, gap: 16 }]}>
+            {access === 'denied' ? (
+              <>
+                <Text style={heading}>Camera access is needed to shoot the cars.</Text>
+                <BigButton label="Allow camera" onPress={() => void askAgain()} />
+                <BigButton label="Cancel" tone="dark" onPress={onClose} />
+              </>
+            ) : (
+              <Text style={heading}>Opening camera</Text>
+            )}
+          </View>
+        )}
+        {showCamera ? (
+          <>
+            <View style={banner}>
+              <Text style={heading}>{angleLabel.toUpperCase()}</Text>
+            </View>
+            <View style={controls}>
+              {error ? <Text style={errorText}>{error}</Text> : null}
+              <Pressable
+                accessibilityRole="button"
+                disabled={busy}
+                onPress={() => void shoot()}
+                style={({ pressed }) => [shutter, { opacity: busy ? 0.5 : pressed ? 0.8 : 1 }]}
+              >
+                <Text style={shutterText}>{busy ? 'Saving photo' : `Take ${angleLabel} photo`}</Text>
+              </Pressable>
+              <BigButton label="Cancel" tone="dark" onPress={onClose} />
+            </View>
+          </>
+        ) : null}
       </View>
-      <View style={controls}>
-        {error ? <Text style={errorText}>{error}</Text> : null}
-        <Pressable
-          accessibilityRole="button"
-          disabled={busy}
-          onPress={() => void shoot()}
-          style={({ pressed }) => [shutter, { opacity: busy ? 0.5 : pressed ? 0.8 : 1 }]}
-        >
-          <Text style={shutterText}>{busy ? 'Saving photo' : `Take ${angleLabel} photo`}</Text>
-        </Pressable>
-        <BigButton label="Cancel" tone="dark" onPress={onClose} />
-      </View>
-    </View>
+    </Modal>
   );
 }
 
-const overlay = {
-  flex: 1,
-  backgroundColor: colors.bg,
-  justifyContent: 'center' as const,
-  padding: 20,
-  gap: 16,
-};
-
 const banner = {
   position: 'absolute' as const,
-  top: 24,
+  top: 36,
   left: 16,
   right: 16,
   backgroundColor: colors.bg,
@@ -166,7 +222,7 @@ const controls = {
   position: 'absolute' as const,
   left: 16,
   right: 16,
-  bottom: 24,
+  bottom: 48,
   gap: 10,
 };
 

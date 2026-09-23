@@ -1,6 +1,6 @@
 import * as Clipboard from 'expo-clipboard';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Modal, Text, View } from 'react-native';
 
 import { LotWorkspace } from '../../../src/components/LotWorkspace';
@@ -17,16 +17,17 @@ import {
 } from '../../../src/lib/api';
 import { MAX_CARS } from '../../../src/lib/angles';
 import { useAuth } from '../../../src/lib/auth';
-import { shareUrl } from '../../../src/lib/config';
 import { formatTripDay } from '../../../src/lib/dates';
 import { formatPay } from '../../../src/lib/money';
-import { useUploadQueue } from '../../../src/lib/queueContext';
+import { relocateCarPhotos } from '../../../src/lib/photos';
+import { useUploadJobs, useUploadQueue } from '../../../src/lib/queueContext';
 import { colors, styles } from '../../../src/theme';
 
 export default function TripScreen() {
   const router = useRouter();
   const { session } = useAuth();
   const queue = useUploadQueue();
+  const jobs = useUploadJobs();
   const params = useLocalSearchParams<{ id?: string }>();
   const tripId = typeof params.id === 'string' ? params.id : '';
   const [trip, setTrip] = useState<Trip | null>(null);
@@ -73,6 +74,16 @@ export default function TripScreen() {
     }, [refresh]),
   );
 
+  useEffect(() => {
+    return queue.onUploaded((job) => {
+      if (job.tripId === tripId) void refresh();
+    });
+  }, [queue, tripId, refresh]);
+
+  useEffect(() => {
+    setCopied(false);
+  }, [trip?.album_url]);
+
   function onLotChange(carId: string, lotNumber: string) {
     const generation = (lotGeneration.current[carId] ?? 0) + 1;
     lotGeneration.current[carId] = generation;
@@ -82,6 +93,8 @@ export default function TripScreen() {
     clearTimeout(timers.current[carId]);
     timers.current[carId] = setTimeout(() => {
       void saveLotNumber(carId, lotNumber)
+        .then(() => relocateCarPhotos(carId))
+        .then(() => queue.releaseCar(carId))
         .catch((err: Error) => setLotError(err.message))
         .finally(() => {
           if (lotGeneration.current[carId] === generation) dirtyLots.current.delete(carId);
@@ -107,7 +120,7 @@ export default function TripScreen() {
     setBusy(true);
     try {
       queue.cancelCar(last.id);
-      await removeCar(session.user.id, trip.id, last.id);
+      await removeCar(trip.id, last.id);
       setConfirmRemove(false);
       await refresh();
     } catch (err) {
@@ -122,7 +135,7 @@ export default function TripScreen() {
     setBusy(true);
     try {
       queue.cancelTrip(trip.id);
-      await deleteTrip(session.user.id, trip, cars);
+      await deleteTrip(trip.id);
       router.replace('/');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not delete the trip');
@@ -131,8 +144,8 @@ export default function TripScreen() {
   }
 
   async function copyLink() {
-    if (!trip) return;
-    await Clipboard.setStringAsync(shareUrl(trip.share_token));
+    if (!trip?.album_url) return;
+    await Clipboard.setStringAsync(trip.album_url);
     setCopied(true);
   }
 
@@ -171,13 +184,18 @@ export default function TripScreen() {
         onRemoveLastCar={() => setConfirmRemove(true)}
         lotError={lotError}
       />
-      <BigButton label={copied ? 'Link copied' : 'Copy share link'} onPress={() => void copyLink()} />
+      <BigButton
+        label={copied ? 'Link copied' : 'Copy share link'}
+        onPress={() => void copyLink()}
+        disabled={!trip.album_url}
+      />
+      <Text style={styles.body}>{shareStatus(trip.album_url, jobs.filter((job) => job.tripId === trip.id).length)}</Text>
       <BigButton label="Delete trip" tone="danger" onPress={() => setConfirmDelete(true)} />
       <Modal visible={confirmDelete} transparent animationType="fade" onRequestClose={() => setConfirmDelete(false)}>
         <View style={modalBackdrop}>
           <View style={modalCard}>
             <Text style={styles.title}>Delete this trip?</Text>
-            <Text style={styles.body}>Cars and photos for this trip will be removed.</Text>
+            <Text style={styles.body}>This removes the trip and its lot photos.</Text>
             <BigButton label={busy ? 'Deleting' : 'Delete trip'} tone="danger" onPress={() => void onDelete()} disabled={busy} />
             <BigButton label="Keep trip" tone="dark" onPress={() => setConfirmDelete(false)} />
           </View>
@@ -194,6 +212,14 @@ export default function TripScreen() {
       </Modal>
     </Screen>
   );
+}
+
+function shareStatus(albumUrl: string | null, pending: number): string {
+  if (!albumUrl) return 'The share link appears after a photo finishes sending.';
+  const ready = albumUrl.split('\n').filter(Boolean).length;
+  const links = ready === 1 ? '1 photo link ready' : `${ready} photo links ready`;
+  if (pending > 0) return `${links}. More photos are still sending.`;
+  return `${links}.`;
 }
 
 const modalBackdrop = {

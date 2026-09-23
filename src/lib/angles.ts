@@ -10,6 +10,16 @@ export const ANGLES = [
 
 export type Angle = (typeof ANGLES)[number]['id'];
 
+export const ANGLE_FILE_TAG: Record<Angle, string> = {
+  top: 'top',
+  front: 'front',
+  driver_side: 'driver',
+  back: 'back',
+  passenger_side: 'passenger',
+  keys: 'keys',
+  under_vehicle: 'under',
+};
+
 export const MAX_CARS = 15;
 export const DEFAULT_CAR_COUNT = 9;
 

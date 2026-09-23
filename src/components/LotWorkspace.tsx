@@ -2,7 +2,6 @@ import { useState } from 'react';
 import { Image, Pressable, Text, TextInput, View } from 'react-native';
 
 import { ANGLES, MAX_CARS, angleLabel, photoKey, type Angle } from '../lib/angles';
-import { photoPublicUrl } from '../lib/config';
 import { useUploadJobs, useUploadQueue } from '../lib/queueContext';
 import type { UploadJob } from '../lib/uploadQueue';
 import { colors, styles } from '../theme';
@@ -18,7 +17,7 @@ export type LotCar = {
 export type LotPhoto = {
   car_id: string;
   angle: Angle;
-  storage_path: string;
+  image_url: string;
 };
 
 export function LotWorkspace({
@@ -73,23 +72,13 @@ export function LotWorkspace({
       localUri: photo.uri,
       width: photo.width,
       height: photo.height,
-      storagePath: `${userId}/${tripId}/${target.carId}/${target.angle}.jpg`,
+      fileName: `${target.angle}.jpg`,
       carId: target.carId,
       tripId,
       userId,
       angle: target.angle,
     });
     setTarget(null);
-  }
-
-  if (target) {
-    return (
-      <LotCamera
-        angleLabel={angleLabel(target.angle)}
-        onClose={() => setTarget(null)}
-        onShot={onShot}
-      />
-    );
   }
 
   const allShot = cars.length > 0 && cars.every((car) => ANGLES.every((angle) => covered(car.id, angle.id)));
@@ -115,6 +104,13 @@ export function LotWorkspace({
         onPress={shootNext}
         disabled={allShot}
       />
+      {target ? (
+        <LotCamera
+          angleLabel={angleLabel(target.angle)}
+          onClose={() => setTarget(null)}
+          onShot={onShot}
+        />
+      ) : null}
     </View>
   );
 }
@@ -152,8 +148,14 @@ function CarCard({
           const key = photoKey(car.id, angle.id);
           const job = jobs.find((item) => item.carId === car.id && item.angle === angle.id);
           const server = photos.find((photo) => photo.car_id === car.id && photo.angle === angle.id);
-          const uri = localUris[key] ?? job?.localUri ?? (server ? photoPublicUrl(server.storage_path) : undefined);
-          const status = job ? (job.status === 'failed' ? 'Retrying' : 'Sending') : null;
+          const uri = localUris[key] ?? job?.localUri ?? server?.image_url;
+          const status = !job
+            ? null
+            : job.status === 'failed'
+              ? 'Retrying'
+              : job.status === 'waiting'
+                ? 'Need lot number'
+                : 'Sending';
           return (
             <Pressable
               key={angle.id}

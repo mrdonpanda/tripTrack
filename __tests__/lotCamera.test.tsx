@@ -1,4 +1,5 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react-native';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
+import { PermissionsAndroid, Platform } from 'react-native';
 
 import { LotWorkspace } from '../src/components/LotWorkspace';
 
@@ -15,6 +16,15 @@ jest.mock('lucide-react-native', () => {
 import { UploadQueueProvider } from '../src/lib/queueContext';
 import { createUploadQueue, memoryStorage, type UploadJob } from '../src/lib/uploadQueue';
 
+jest.mock('react-native-volume-manager', () => ({
+  VolumeManager: {
+    getVolume: jest.fn(async () => ({ volume: 0.4 })),
+    setVolume: jest.fn(async () => undefined),
+    showNativeVolumeUI: jest.fn(async () => undefined),
+    addVolumeListener: jest.fn(() => ({ remove: jest.fn() })),
+  },
+}));
+
 jest.mock('expo-camera', () => {
   const React = require('react') as typeof import('react');
   const { View: NativeView } = require('react-native') as typeof import('react-native');
@@ -26,8 +36,13 @@ jest.mock('expo-camera', () => {
   });
   return {
     CameraView,
-    useCameraPermissions: () => [{ granted: true, canAskAgain: true, status: 'granted' }, jest.fn(), jest.fn()],
+    useCameraPermissions: () => [
+      { granted: true, canAskAgain: true, status: 'granted' },
+      jest.fn(async () => ({ granted: true, canAskAgain: true, status: 'granted' })),
+      jest.fn(),
+    ],
     Camera: {
+      requestCameraPermissionsAsync: jest.fn(async () => ({ granted: true, canAskAgain: true, status: 'granted' })),
       getAvailableCameraDevicesAsync: jest.fn(async () => [
         { id: 'wide-back', position: 'back', lensType: 'wide', name: 'Back Wide', minFocalLength: 5.4, focalLengths: [5.4], minZoom: 1 },
         {
@@ -82,6 +97,15 @@ function createQueue() {
 }
 
 describe('lot camera', () => {
+  beforeEach(() => {
+    jest.spyOn(PermissionsAndroid, 'request').mockResolvedValue(PermissionsAndroid.RESULTS.GRANTED);
+  });
+
+  afterEach(() => {
+    cleanup();
+    jest.restoreAllMocks();
+  });
+
   it('opens the ultrawide camera and lets the driver shoot the next angle while the upload is still queued', async () => {
     const queue = (await renderLot()) as ReturnType<typeof createQueue>;
     fireEvent.press(screen.getByText('Shoot next'));
@@ -94,6 +118,11 @@ describe('lot camera', () => {
     expect(camera.props.zoom).toBe(0);
     expect(camera.props.useWidestZoom).toBe(true);
     expect(camera.props.facing).toBe('back');
+    expect(camera.props.style.flex).toBe(1);
+    expect(camera.props.style.width).toBeGreaterThan(0);
+    expect(camera.props.style.height).toBeGreaterThan(0);
+    expect(screen.getByTestId('camera-frame').props.style.width).toBeGreaterThan(0);
+    expect(screen.getByTestId('camera-frame').props.style.height).toBeGreaterThan(0);
 
     fireEvent.press(screen.getByText('Take Top photo'));
     await waitFor(() => {
@@ -111,5 +140,38 @@ describe('lot camera', () => {
 
     queue.releases.forEach((release) => release());
     await queue.whenDrained();
+  });
+
+  it('keeps the preview unmounted until android.permission.CAMERA is granted', async () => {
+    const previous = Platform.OS;
+    Platform.OS = 'android';
+    let grant: () => void = () => undefined;
+    const request = jest.spyOn(PermissionsAndroid, 'request').mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          grant = () => resolve(PermissionsAndroid.RESULTS.GRANTED);
+        }),
+    );
+    try {
+      await renderLot();
+      fireEvent.press(screen.getByText('Shoot next'));
+      await waitFor(() => {
+        expect(request).toHaveBeenCalledWith('android.permission.CAMERA');
+      });
+      expect(screen.queryByTestId('camera-view')).toBeNull();
+      expect(screen.getByText('Opening camera')).toBeTruthy();
+      await act(async () => {
+        grant();
+      });
+      await waitFor(() => {
+        expect(screen.getByTestId('camera-view')).toBeTruthy();
+      });
+      const camera = screen.getByTestId('camera-view');
+      expect(camera.props.style.width).toBeGreaterThan(0);
+      expect(camera.props.style.height).toBeGreaterThan(0);
+    } finally {
+      request.mockRestore();
+      Platform.OS = previous;
+    }
   });
 });
