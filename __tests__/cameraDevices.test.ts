@@ -49,6 +49,16 @@ describe('selectWidestBackCamera', () => {
     });
   });
 
+  it('uses the back camera that can zoom out to 0.5x', () => {
+    const choice = selectWidestBackCamera([
+      { id: 'short', position: 'back', lensType: 'wide', name: 'short', minFocalLength: 2, focalLengths: [2], minZoom: 1 },
+      { id: 'logical', position: 'back', lensType: 'wide', name: 'logical', minFocalLength: 5, focalLengths: [5], minZoom: 0.5 },
+    ]);
+    expect(choice.deviceId).toBe('logical');
+    expect(choice.zoom).toBe(0);
+    expect(choice.useWidestZoom).toBe(true);
+  });
+
   it('picks the dedicated shortest back lens when nothing is named ultrawide', () => {
     const choice = selectWidestBackCamera([
       { id: 'main', position: 'back', lensType: 'wide', name: 'main', minFocalLength: 5, focalLengths: [5, 2] },

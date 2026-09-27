@@ -1,10 +1,11 @@
 import { CameraView, type CameraViewProps } from 'expo-camera';
-import { useEffect, useRef, useState, type ComponentType, type Ref } from 'react';
-import { Modal, Pressable, Text, useWindowDimensions, View } from 'react-native';
+import { useEffect, useRef, useState, type ComponentType, type ReactNode, type Ref } from 'react';
+import { BackHandler, Modal, Pressable, Text, useWindowDimensions, View } from 'react-native';
 
 import { ensureCameraAccess } from '../lib/cameraAccess';
 import { selectWidestBackCamera, type WidestCameraChoice } from '../lib/cameraDevices';
 import { queryCameraDevices } from '../lib/cameraQuery';
+import { ensureDeviceAlbumPermission } from '../lib/deviceAlbum';
 import { startVolumeShutter } from '../lib/volumeShutter';
 import { colors } from '../theme';
 import { BigButton } from './ui';
@@ -34,15 +35,19 @@ export function LotCamera({
   angleLabel,
   onShot,
   onClose,
+  presentation = 'modal',
 }: {
   angleLabel: string;
   onShot: (photo: { uri: string; width: number; height: number }) => void;
   onClose: () => void;
+  presentation?: 'modal' | 'overlay';
 }) {
   const { width, height } = useWindowDimensions();
   const frame = { flex: 1 as const, width, height, backgroundColor: colors.bg };
   const cameraRef = useRef<CameraView>(null);
+  const shooting = useRef(false);
   const [access, setAccess] = useState<'pending' | 'granted' | 'denied'>('pending');
+  const [albumReady, setAlbumReady] = useState<boolean | null>(null);
   const [choice, setChoice] = useState<WidestCameraChoice | null>(null);
   const [forceDefault, setForceDefault] = useState(false);
   const [lensOverride, setLensOverride] = useState<string | undefined>();
@@ -63,6 +68,30 @@ export function LotCamera({
       live = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (access !== 'granted') return;
+    let live = true;
+    ensureDeviceAlbumPermission()
+      .then((ok) => {
+        if (live) setAlbumReady(ok);
+      })
+      .catch(() => {
+        if (live) setAlbumReady(false);
+      });
+    return () => {
+      live = false;
+    };
+  }, [access]);
+
+  useEffect(() => {
+    if (presentation !== 'overlay') return;
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      onClose();
+      return true;
+    });
+    return () => subscription.remove();
+  }, [presentation, onClose]);
 
   useEffect(() => {
     if (access !== 'granted') return;
@@ -91,7 +120,8 @@ export function LotCamera({
   }
 
   async function shoot() {
-    if (busy || !cameraRef.current) return;
+    if (shooting.current || !cameraRef.current) return;
+    shooting.current = true;
     setBusy(true);
     setError(null);
     try {
@@ -99,9 +129,15 @@ export function LotCamera({
       if (!photo?.uri) throw new Error('The camera did not return a photo');
       onShot({ uri: photo.uri, width: photo.width, height: photo.height });
     } catch (err) {
+      shooting.current = false;
       setError(err instanceof Error ? err.message : 'Could not take the photo');
       setBusy(false);
     }
+  }
+
+  async function allowAlbum() {
+    const ok = await ensureDeviceAlbumPermission(true);
+    setAlbumReady(ok);
   }
 
   const showCamera = access === 'granted' && choice != null;
@@ -128,15 +164,7 @@ export function LotCamera({
     };
   }, [showCamera]);
 
-  return (
-    <Modal
-      visible
-      animationType="fade"
-      presentationStyle="fullScreen"
-      statusBarTranslucent
-      supportedOrientations={['portrait', 'landscape']}
-      onRequestClose={onClose}
-    >
+  const frameView = (
       <View testID="camera-frame" collapsable={false} style={frame}>
         {showCamera ? (
           <WidestCamera
@@ -183,6 +211,12 @@ export function LotCamera({
               <Text style={heading}>{angleLabel.toUpperCase()}</Text>
             </View>
             <View style={controls}>
+              {albumReady === false ? (
+                <>
+                  <Text style={errorText}>Allow photo storage so each photo stays in the TripTracker album.</Text>
+                  <BigButton label="Allow photo storage" onPress={() => void allowAlbum()} />
+                </>
+              ) : null}
               {error ? <Text style={errorText}>{error}</Text> : null}
               <Pressable
                 accessibilityRole="button"
@@ -197,6 +231,31 @@ export function LotCamera({
           </>
         ) : null}
       </View>
+  );
+
+  return <CameraShell presentation={presentation} onClose={onClose}>{frameView}</CameraShell>;
+}
+
+function CameraShell({
+  presentation,
+  onClose,
+  children,
+}: {
+  presentation: 'modal' | 'overlay';
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  if (presentation === 'overlay') return <View style={{ flex: 1 }}>{children}</View>;
+  return (
+    <Modal
+      visible
+      animationType="fade"
+      presentationStyle="fullScreen"
+      statusBarTranslucent
+      supportedOrientations={['portrait', 'landscape']}
+      onRequestClose={onClose}
+    >
+      {children}
     </Modal>
   );
 }

@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { PermissionsAndroid, Platform } from 'react-native';
 
 import { LotWorkspace } from '../src/components/LotWorkspace';
+import { Screen } from '../src/components/ui';
 
 jest.mock('lucide-react-native', () => {
   const React = require('react');
@@ -15,6 +16,18 @@ jest.mock('lucide-react-native', () => {
 });
 import { UploadQueueProvider } from '../src/lib/queueContext';
 import { createUploadQueue, memoryStorage, type UploadJob } from '../src/lib/uploadQueue';
+
+jest.mock('expo-media-library', () => ({
+  getPermissionsAsync: jest.fn(async () => ({ granted: true, status: 'granted', canAskAgain: true })),
+  requestPermissionsAsync: jest.fn(async () => ({ granted: true, status: 'granted', canAskAgain: true })),
+  Album: {
+    get: jest.fn(async () => null),
+    create: jest.fn(async () => ({ id: 'album' })),
+  },
+  Asset: {
+    create: jest.fn(async () => ({ id: 'asset' })),
+  },
+}));
 
 jest.mock('react-native-volume-manager', () => ({
   VolumeManager: {
@@ -67,15 +80,17 @@ const { Camera } = require('expo-camera') as {
 async function renderLot(queue = createQueue()) {
   await render(
     <UploadQueueProvider queue={queue}>
-      <LotWorkspace
-        userId="user-1"
-        tripId="trip-1"
-        cars={[{ id: 'car-1', position: 1, lot_number: '' }]}
-        photos={[]}
-        onLotChange={jest.fn()}
-        onAddCar={jest.fn()}
-        onRemoveLastCar={jest.fn()}
-      />
+      <Screen>
+        <LotWorkspace
+          userId="user-1"
+          tripId="trip-1"
+          cars={[{ id: 'car-1', position: 1, lot_number: '' }]}
+          photos={[]}
+          onLotChange={jest.fn()}
+          onAddCar={jest.fn()}
+          onRemoveLastCar={jest.fn()}
+        />
+      </Screen>
     </UploadQueueProvider>,
   );
   return queue;

@@ -148,4 +148,52 @@ describe('upload queue', () => {
     await queue.whenDrained();
     expect(uploads).toEqual(['sent']);
   });
+
+  it('saves the resized photo on the phone before uploading it', async () => {
+    const order: string[] = [];
+    const queue = createUploadQueue({
+      compress: async () => {
+        order.push('compress');
+        return { uri: 'file://small.jpg' };
+      },
+      saveLocal: async (_job, uri) => {
+        order.push(`save:${uri}`);
+      },
+      upload: async () => {
+        order.push('upload');
+      },
+      storage: memoryStorage(),
+      sleep: async () => undefined,
+      now: () => 0,
+    });
+    queue.enqueue(job('a'));
+    await queue.whenDrained();
+    expect(order).toEqual(['compress', 'save:file://small.jpg', 'upload']);
+  });
+
+  it('retries a phone-album failure before the photo is uploaded', async () => {
+    let saves = 0;
+    let uploads = 0;
+    let clock = 0;
+    const queue = createUploadQueue({
+      compress: async () => ({ uri: 'file://small.jpg' }),
+      saveLocal: async () => {
+        saves += 1;
+        if (saves === 1) throw new Error('Allow photo storage to keep a copy in the TripTracker album');
+      },
+      upload: async () => {
+        uploads += 1;
+      },
+      storage: memoryStorage(),
+      sleep: async (ms) => {
+        clock += ms;
+      },
+      now: () => clock,
+    });
+    queue.enqueue(job('a'));
+    await queue.whenDrained();
+    expect(saves).toBe(2);
+    expect(uploads).toBe(1);
+    expect(queue.list()).toEqual([]);
+  });
 });

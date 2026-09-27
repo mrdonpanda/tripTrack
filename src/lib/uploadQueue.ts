@@ -14,6 +14,8 @@ export type UploadJob = {
   attempts: number;
   status: 'pending' | 'uploading' | 'failed' | 'waiting';
   nextAttemptAt: number;
+  savedLocally?: boolean;
+  lastError?: string;
 };
 
 export type NewUploadJob = Omit<UploadJob, 'attempts' | 'status' | 'nextAttemptAt' | 'imageUrl'>;
@@ -35,6 +37,8 @@ export function reviveUploadJob(raw: Partial<UploadJob> & { storagePath?: string
     attempts: raw.attempts ?? 0,
     status: raw.status === 'failed' ? 'failed' : 'pending',
     nextAttemptAt: 0,
+    savedLocally: raw.savedLocally === true,
+    lastError: raw.lastError,
   };
 }
 
@@ -46,6 +50,7 @@ export type QueueStorage = {
 export type UploadQueueDeps = {
   compress: (job: UploadJob) => Promise<{ uri: string }>;
   upload: (job: UploadJob, jpegUri: string) => Promise<void>;
+  saveLocal?: (job: UploadJob, jpegUri: string) => Promise<void>;
   storage: QueueStorage;
   sleep: (ms: number) => Promise<void>;
   now: () => number;
@@ -195,6 +200,11 @@ export class UploadQueue {
           const compressed = await this.deps.compress(ready);
           if (this.stopped || !this.jobs.includes(ready)) continue;
           ready.localUri = compressed.uri;
+          if (this.deps.saveLocal && !ready.savedLocally) {
+            await this.deps.saveLocal(ready, compressed.uri);
+            if (this.stopped || !this.jobs.includes(ready)) continue;
+            ready.savedLocally = true;
+          }
           this.persist();
           await this.deps.upload(ready, compressed.uri);
           if (this.stopped || !this.jobs.includes(ready)) continue;
@@ -207,6 +217,7 @@ export class UploadQueue {
           const waiting = err instanceof Error && err.name === 'WaitingForLotNumber';
           if (!waiting) ready.attempts += 1;
           ready.status = waiting ? 'waiting' : 'failed';
+          ready.lastError = waiting ? undefined : err instanceof Error ? err.message : 'Could not send the photo';
           ready.nextAttemptAt = this.deps.now() + (waiting ? 1_000 : backoffMs(ready.attempts));
           this.emit();
           this.persist();

@@ -1,6 +1,6 @@
 import { useRouter } from 'expo-router';
 import { ChevronLeft } from 'lucide-react-native';
-import { type ReactNode } from 'react';
+import { createContext, useContext, useMemo, useState, type ReactNode } from 'react';
 import {
   KeyboardAvoidingView,
   Platform,
@@ -15,6 +15,17 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { colors, styles } from '../theme';
 
+type OverlayApi = {
+  show: (node: ReactNode) => void;
+  hide: () => void;
+};
+
+const OverlayContext = createContext<OverlayApi | null>(null);
+
+export function useScreenOverlay(): OverlayApi | null {
+  return useContext(OverlayContext);
+}
+
 export function Screen({
   children,
   footer,
@@ -24,21 +35,49 @@ export function Screen({
   footer?: ReactNode;
   scroll?: boolean;
 }) {
+  const [overlay, setOverlay] = useState<ReactNode>(null);
+  const api = useMemo<OverlayApi>(
+    () => ({
+      show: (node) => setOverlay(node),
+      hide: () => setOverlay(null),
+    }),
+    [],
+  );
   return (
-    <SafeAreaView style={styles.safe}>
-      <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-        {scroll ? (
-          <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
-            {children}
-          </ScrollView>
-        ) : (
-          <View style={[styles.flex, { padding: 16, gap: 14 }]}>{children}</View>
-        )}
-        {footer ? <View style={{ padding: 16, paddingTop: 0, gap: 10 }}>{footer}</View> : null}
-      </KeyboardAvoidingView>
-    </SafeAreaView>
+    <OverlayContext.Provider value={api}>
+      <View style={styles.flex}>
+        <SafeAreaView style={styles.safe}>
+          <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+            {scroll ? (
+              <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
+                {children}
+              </ScrollView>
+            ) : (
+              <View style={[styles.flex, { padding: 16, gap: 14 }]}>{children}</View>
+            )}
+            {footer ? <View style={{ padding: 16, paddingTop: 0, gap: 10 }}>{footer}</View> : null}
+          </KeyboardAvoidingView>
+        </SafeAreaView>
+        {overlay ? (
+          <View pointerEvents="auto" style={cameraOverlay}>
+            {overlay}
+          </View>
+        ) : null}
+      </View>
+    </OverlayContext.Provider>
   );
 }
+
+const cameraOverlay = {
+  position: 'absolute' as const,
+  top: 0,
+  right: 0,
+  bottom: 0,
+  left: 0,
+  zIndex: 30,
+  elevation: 30,
+  backgroundColor: colors.bg,
+};
 
 export function BigButton({
   label,

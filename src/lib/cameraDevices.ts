@@ -43,11 +43,20 @@ function shortestFocal(devices: CameraDevice[]): CameraDevice | undefined {
   );
 }
 
+function widestZoom(devices: CameraDevice[]): CameraDevice | undefined {
+  const zoomable = devices.filter((device) => {
+    const minZoom = device.minZoom ?? 0;
+    return minZoom > 0 && minZoom < 0.99;
+  });
+  if (!zoomable.length) return undefined;
+  return zoomable.reduce((best, device) => ((device.minZoom ?? 1) < (best.minZoom ?? 1) ? device : best));
+}
+
 export function selectWidestBackCamera(devices: CameraDevice[]): WidestCameraChoice {
   const back = devices.filter((device) => device.position === 'back');
   const namedUltra = back.filter(isUltrawide);
   const dedicatedNamed = namedUltra.find((device) => device.focalLengths?.length === 1);
-  const chosen = dedicatedNamed ?? namedUltra[0] ?? shortestFocal(back) ?? back[0];
+  const chosen = widestZoom(back) ?? dedicatedNamed ?? namedUltra[0] ?? shortestFocal(back) ?? back[0];
   const lensName = chosen && isUltrawide(chosen) && chosen.name && chosen.name !== chosen.id ? chosen.name : undefined;
   return {
     deviceId: chosen?.id,

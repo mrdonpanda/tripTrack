@@ -1,4 +1,3 @@
-import * as Clipboard from 'expo-clipboard';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Modal, Text, View } from 'react-native';
@@ -20,14 +19,13 @@ import { useAuth } from '../../../src/lib/auth';
 import { formatTripDay } from '../../../src/lib/dates';
 import { formatPay } from '../../../src/lib/money';
 import { relocateCarPhotos } from '../../../src/lib/photos';
-import { useUploadJobs, useUploadQueue } from '../../../src/lib/queueContext';
+import { useUploadQueue } from '../../../src/lib/queueContext';
 import { colors, styles } from '../../../src/theme';
 
 export default function TripScreen() {
   const router = useRouter();
   const { session } = useAuth();
   const queue = useUploadQueue();
-  const jobs = useUploadJobs();
   const params = useLocalSearchParams<{ id?: string }>();
   const tripId = typeof params.id === 'string' ? params.id : '';
   const [trip, setTrip] = useState<Trip | null>(null);
@@ -38,7 +36,6 @@ export default function TripScreen() {
   const [missing, setMissing] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
-  const [copied, setCopied] = useState(false);
   const [busy, setBusy] = useState(false);
   const timers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const dirtyLots = useRef<Set<string>>(new Set());
@@ -79,10 +76,6 @@ export default function TripScreen() {
       if (job.tripId === tripId) void refresh();
     });
   }, [queue, tripId, refresh]);
-
-  useEffect(() => {
-    setCopied(false);
-  }, [trip?.album_url]);
 
   function onLotChange(carId: string, lotNumber: string) {
     const generation = (lotGeneration.current[carId] ?? 0) + 1;
@@ -143,12 +136,6 @@ export default function TripScreen() {
     }
   }
 
-  async function copyLink() {
-    if (!trip?.album_url) return;
-    await Clipboard.setStringAsync(trip.album_url);
-    setCopied(true);
-  }
-
   if (missing) {
     return (
       <Screen>
@@ -184,12 +171,6 @@ export default function TripScreen() {
         onRemoveLastCar={() => setConfirmRemove(true)}
         lotError={lotError}
       />
-      <BigButton
-        label={copied ? 'Link copied' : 'Copy share link'}
-        onPress={() => void copyLink()}
-        disabled={!trip.album_url}
-      />
-      <Text style={styles.body}>{shareStatus(trip.album_url, jobs.filter((job) => job.tripId === trip.id).length)}</Text>
       <BigButton label="Delete trip" tone="danger" onPress={() => setConfirmDelete(true)} />
       <Modal visible={confirmDelete} transparent animationType="fade" onRequestClose={() => setConfirmDelete(false)}>
         <View style={modalBackdrop}>
@@ -212,14 +193,6 @@ export default function TripScreen() {
       </Modal>
     </Screen>
   );
-}
-
-function shareStatus(albumUrl: string | null, pending: number): string {
-  if (!albumUrl) return 'The share link appears after a photo finishes sending.';
-  const ready = albumUrl.split('\n').filter(Boolean).length;
-  const links = ready === 1 ? '1 photo link ready' : `${ready} photo links ready`;
-  if (pending > 0) return `${links}. More photos are still sending.`;
-  return `${links}.`;
 }
 
 const modalBackdrop = {

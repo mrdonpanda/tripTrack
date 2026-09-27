@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Image, Pressable, Text, TextInput, View } from 'react-native';
 
 import { ANGLES, MAX_CARS, angleLabel, photoKey, type Angle } from '../lib/angles';
@@ -6,7 +6,7 @@ import { useUploadJobs, useUploadQueue } from '../lib/queueContext';
 import type { UploadJob } from '../lib/uploadQueue';
 import { colors, styles } from '../theme';
 import { LotCamera } from './LotCamera';
-import { BigButton } from './ui';
+import { BigButton, useScreenOverlay } from './ui';
 
 export type LotCar = {
   id: string;
@@ -41,8 +41,11 @@ export function LotWorkspace({
 }) {
   const queue = useUploadQueue();
   const jobs = useUploadJobs();
+  const overlay = useScreenOverlay();
   const [localUris, setLocalUris] = useState<Record<string, string>>({});
   const [target, setTarget] = useState<{ carId: string; angle: Angle } | null>(null);
+  const targetRef = useRef(target);
+  targetRef.current = target;
 
   function covered(carId: string, angle: Angle): boolean {
     const key = photoKey(carId, angle);
@@ -63,23 +66,44 @@ export function LotWorkspace({
     }
   }
 
-  function onShot(photo: { uri: string; width: number; height: number }) {
-    if (!target) return;
-    const key = photoKey(target.carId, target.angle);
-    setLocalUris((current) => ({ ...current, [key]: photo.uri }));
-    queue.enqueue({
-      id: key,
-      localUri: photo.uri,
-      width: photo.width,
-      height: photo.height,
-      fileName: `${target.angle}.jpg`,
-      carId: target.carId,
-      tripId,
-      userId,
-      angle: target.angle,
-    });
-    setTarget(null);
-  }
+  const onShot = useCallback(
+    (photo: { uri: string; width: number; height: number }) => {
+      const current = targetRef.current;
+      if (!current) return;
+      const key = photoKey(current.carId, current.angle);
+      setLocalUris((uris) => ({ ...uris, [key]: photo.uri }));
+      queue.enqueue({
+        id: key,
+        localUri: photo.uri,
+        width: photo.width,
+        height: photo.height,
+        fileName: `${current.angle}.jpg`,
+        carId: current.carId,
+        tripId,
+        userId,
+        angle: current.angle,
+      });
+      setTarget(null);
+    },
+    [queue, tripId, userId],
+  );
+
+  useEffect(() => {
+    if (!overlay) return;
+    if (!target) {
+      overlay.hide();
+      return;
+    }
+    overlay.show(
+      <LotCamera
+        presentation="overlay"
+        angleLabel={angleLabel(target.angle)}
+        onClose={() => setTarget(null)}
+        onShot={onShot}
+      />,
+    );
+    return () => overlay.hide();
+  }, [overlay, target, onShot]);
 
   const allShot = cars.length > 0 && cars.every((car) => ANGLES.every((angle) => covered(car.id, angle.id)));
 
@@ -104,7 +128,7 @@ export function LotWorkspace({
         onPress={shootNext}
         disabled={allShot}
       />
-      {target ? (
+      {!overlay && target ? (
         <LotCamera
           angleLabel={angleLabel(target.angle)}
           onClose={() => setTarget(null)}
@@ -113,6 +137,13 @@ export function LotWorkspace({
       ) : null}
     </View>
   );
+}
+
+function chipStatus(job: UploadJob | undefined): string | null {
+  if (!job) return null;
+  if (job.status === 'waiting') return 'Need lot number';
+  if (job.status === 'failed') return job.lastError?.includes('TripTracker') ? 'Allow photo storage' : 'Retrying';
+  return 'Sending';
 }
 
 function CarCard({
@@ -149,13 +180,7 @@ function CarCard({
           const job = jobs.find((item) => item.carId === car.id && item.angle === angle.id);
           const server = photos.find((photo) => photo.car_id === car.id && photo.angle === angle.id);
           const uri = localUris[key] ?? job?.localUri ?? server?.image_url;
-          const status = !job
-            ? null
-            : job.status === 'failed'
-              ? 'Retrying'
-              : job.status === 'waiting'
-                ? 'Need lot number'
-                : 'Sending';
+          const status = chipStatus(job);
           return (
             <Pressable
               key={angle.id}

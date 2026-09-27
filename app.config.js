@@ -40,6 +40,15 @@ const config = {
         barcodeScannerEnabled: false,
       },
     ],
+    [
+      'expo-media-library',
+      {
+        photosPermission: 'Trip Tracker keeps a copy of each lot photo in the TripTracker album.',
+        savePhotosPermission: 'Trip Tracker keeps a copy of each lot photo in the TripTracker album.',
+        isAccessMediaLocationEnabled: false,
+        granularPermissions: ['photo'],
+      },
+    ],
   ],
   experiments: {
     typedRoutes: false,
